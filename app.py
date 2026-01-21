@@ -5,119 +5,154 @@ import matplotlib.pyplot as plt
 import datetime
 
 # --- ページ設定 ---
-st.set_page_config(
-    page_title="衛星運用タスキング訓練アプリ",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="衛星運用データタスキング (Notebook Port)", layout="wide")
 
-# --- タイトルと説明 ---
-st.title("🛰️ 人工衛星 運用・タスキング訓練シミュレーター")
-st.markdown("""
-このアプリケーションは、衛星運用の基本的なタスキング（撮影計画）と、
-コマンド送信時のテレメトリ変動を模擬体験するためのトレーニングツールです。
-""")
+st.title("🛰️ 衛星データタスキング & 運用シミュレーション")
+st.markdown("Jupyter Notebookの実装を基にしたWebアプリケーションです。")
 
-# --- サイドバー：設定入力エリア ---
-st.sidebar.header("1. タスキング設定 (Tasking)")
+# --- サイドバー：パラメータ設定 (Widgetの再現) ---
+st.sidebar.header("1. タスキング設定")
 
-# 1. ターゲット選択
-locations = {
-    "筑波宇宙センター (JAXA)": {"lat": 36.065, "lon": 140.128},
-    "種子島宇宙センター (JAXA)": {"lat": 30.399, "lon": 130.968},
-    "東京駅": {"lat": 35.681, "lon": 139.767},
-    "富士山": {"lat": 35.360, "lon": 138.727},
-    "ワシントンD.C. (US)": {"lat": 38.907, "lon": -77.036},
-    "ロンドン (UK)": {"lat": 51.507, "lon": -0.127},
+# ノートブックのDropdownModelに含まれていた選択肢リスト
+location_options = [
+    "筑波宇宙センター (JAXA)",
+    "種子島宇宙センター (JAXA)",
+    "東京駅",
+    "いろは坂 (栃木)",
+    "富士山",
+    "桜島",
+    "能登半島 (石川)",
+    "ナイタイ高原牧場 (北海道)",
+    "東京 (日本)",
+    "キャンベラ (オーストラリア)",
+    "ニューデリー (インド)",
+    "ワシントンD.C. (アメリカ)",
+    "オタワ (カナダ)",
+    "ブラジリア (ブラジル)",
+    "ロンドン (イギリス)",
+    "パリ (フランス)",
+    "ケープタウン (南アフリカ)",
+    "カイロ (エジプト)"
+]
+
+# 1. 場所を選択 (Dropdown)
+selected_location = st.sidebar.selectbox("1. 場所を選択:", location_options, index=0)
+
+# 座標データの定義 (ノートブックのロジックを補完)
+# ※ノートブック内の辞書データが見えないため、主要地点の座標を定義して動作するようにしています
+location_coords = {
+    "筑波宇宙センター (JAXA)": [36.065, 140.128],
+    "種子島宇宙センター (JAXA)": [30.399, 130.968],
+    "東京駅": [35.681, 139.767],
+    "富士山": [35.360, 138.727],
+    # (他の地点が選択された場合は東京駅の座標をデフォルトとして使用)
 }
-selected_loc_name = st.sidebar.selectbox("観測ターゲットを選択:", list(locations.keys()))
-target_loc = locations[selected_loc_name]
+current_coords = location_coords.get(selected_location, [35.681, 139.767])
 
-# 2. 日時指定
-selected_date = st.sidebar.date_input("観測日を指定:", datetime.date(2026, 1, 1))
+# 2. 日付を指定 (DatePicker)
+# ノートブックの初期値: 2024-01-01
+default_date = datetime.date(2024, 1, 1)
+selected_date = st.sidebar.date_input("2. 日付を指定:", default_date)
 
-# 3. パラメータ調整
-fov = st.sidebar.slider("観測視野角 (FOV) [度]:", 0.01, 0.5, 0.1, 0.01)
+# 表示範囲 (FloatSlider)
+# ノートブック設定: min=0.01, max=0.5, step=0.01, value=0.1
+fov = st.sidebar.slider("表示範囲 (度):", min_value=0.01, max_value=0.5, value=0.1, step=0.01)
 
 st.sidebar.markdown("---")
-st.sidebar.header("2. 運用モード設定")
-mode = st.sidebar.radio("シミュレーション期間:", ("Event Mode (80s)", "Long-term Mode (1 orbit)"))
 
-# --- メインエリア：可視化と操作 ---
+# --- メインエリア：機能実装 ---
 
-# タブによる機能切り替え
-tab1, tab2, tab3 = st.tabs(["🗺️ 軌道・FOV確認", "📷 衛星画像検索", "ww テレメトリ監視"])
+# 1. 地図表示 (タスキング確認)
+st.subheader(f"📍 ターゲット確認: {selected_location}")
+st.text(f"座標: 北緯 {current_coords[0]}°, 東経 {current_coords[1]}° (FOV: {fov}°)")
 
-with tab1:
-    st.subheader(f"ターゲット確認: {selected_loc_name}")
+# シンプルな地図表示
+map_df = pd.DataFrame({'lat': [current_coords[0]], 'lon': [current_coords[1]]})
+st.map(map_df, zoom=10)
 
-    # 簡易的な地図表示 (Streamlitの機能を使用)
-    map_data = pd.DataFrame({
-        'lat': [target_loc["lat"]],
-        'lon': [target_loc["lon"]]
-    })
-    st.map(map_data, zoom=10)
+# 2. 衛星画像検索機能
+st.subheader("📷 衛星画像データの取得")
 
-    st.info(f"📍 座標: 北緯 {target_loc['lat']}°, 東経 {target_loc['lon']}° | 🔭 設定FOV: {fov}°")
-    st.markdown("本来はここに衛星のグランドトラック（地上軌跡）と可視範囲がオーバーレイ表示されます。")
+# 検索ボタン (Button)
+if st.button("衛星画像を検索", type="primary"):
+    st.session_state['search_executed'] = True
+    st.success("検索が完了しました。画像を選択してください。")
 
-with tab2:
-    st.subheader("アーカイブ画像検索")
-    col1, col2 = st.columns([1, 2])
+# 画像選択 (Dropdown) - 検索後に表示
+# ノートブックのDropdownModelにあった選択肢
+image_options = [
+    "[2024-01-02 01:30] Sentinel-2 (欧州) - 雲: 38.5%",
+    "[2023-12-25 10:15] Sentinel-2 (欧州) - 雲: 12.0%",
+    "[2023-12-10 09:45] Sentinel-2 (欧州) - 雲: 5.2%"
+]
 
-    with col1:
-        st.write("条件に合致する過去の衛星画像を検索します。")
-        if st.button("検索実行", type="primary"):
-            st.session_state['search_done'] = True
+selected_image = st.selectbox(
+    "3. 画像を選択:", 
+    image_options, 
+    disabled=not st.session_state.get('search_executed', False)
+)
 
-    with col2:
-        if st.session_state.get('search_done'):
-            # ダミーデータの生成
-            dummy_images = [
-                f"[2024-01-02] Cloud: 12% - {selected_loc_name}",
-                f"[2023-12-25] Cloud: 45% - {selected_loc_name}",
-                f"[2023-11-10] Cloud: 05% - {selected_loc_name}"
-            ]
-            img_choice = st.selectbox("画像を選択してください:", dummy_images)
-
-            if st.button("画像を表示"):
-                # ここではランダムノイズで画像を模擬していますが、本来は画像データを表示します
-                st.image(np.random.rand(100,100,3), caption=img_choice, width=400)
-                st.success("画像を取得しました。")
-
-with tab3:
-    st.subheader("システム挙動シミュレーション")
-
-    # データの生成（シミュレーション）
-    if mode == "Event Mode (80s)":
-        t = np.linspace(0, 80, 100)
-        # イベント時の電力消費スパイクを模擬
-        power = 200 + 100 * np.exp(-((t - 40)**2) / 20) + np.random.normal(0, 5, 100)
-        title_text = "イベント（撮影）時のバス電圧/消費電力推移"
-        x_label = "Time [sec]"
-    else:
-        t = np.linspace(0, 90, 100) # 90分（約1周回）
-        # 日照・日陰による発電量変化を模擬
-        power = 500 * (np.sin(t * 0.1) > 0).astype(float) * np.sin(t*0.1) + 20
-        title_text = "1周回(90分)の電力収支プロファイル"
-        x_label = "Time [min]"
-
-    # グラフ描画
-    fig, ax = plt.subplots(figsize=(10, 4))
-    ax.plot(t, power, color='orange', linewidth=2)
-    ax.set_title(title_text)
-    ax.set_xlabel(x_label)
-    ax.set_ylabel("Power [W]")
-    ax.grid(True)
-
+# 画像表示ボタン (Button)
+if st.button("画像を表示", type="secondary", disabled=not st.session_state.get('search_executed', False)):
+    st.write("画像をダウンロードして、色を合成しています... ")
+    st.info(f"選択データ: {selected_image}")
+    
+    # 画像のダミー表示（RGBノイズでシミュレーション）
+    # 実際の実装ではここで衛星データを取得・プロットします
+    fig, ax = plt.subplots(figsize=(6, 6))
+    img_data = np.random.rand(100, 100, 3)
+    ax.imshow(img_data)
+    ax.set_title(f"Preview: {selected_location}")
+    ax.axis('off')
     st.pyplot(fig)
 
-    # アラート機能（教育用追加機能）
-    if np.max(power) > 600:
-        st.error("⚠️ 警告: 電力消費が許容範囲を超過する可能性があります！")
-    else:
-        st.success("✅ ステータス: 正常範囲内")
-
-# --- フッター ---
 st.markdown("---")
-st.caption("Satellite Tasking Trainer Prototype | Powered by Streamlit")
+
+# 3. 運用・テレメトリシミュレーション (ノートブック後半のロジック)
+st.subheader("ww 衛星バス部挙動モニタリング")
+
+# 期間モード選択 (ToggleButtonsの再現)
+sim_mode = st.radio("期間モード:", ('Event (80s)', 'Long-term (1day)'), horizontal=True)
+
+# グラフ描画エリア
+fig2, ax2 = plt.subplots(figsize=(10, 4))
+
+if sim_mode == 'Event (80s)':
+    # 短期イベントモード：電力スパイクの再現
+    t = np.linspace(0, 80, 200)
+    # ガウス関数的な電力消費スパイク
+    power = 300 + 400 * np.exp(-0.01 * (t - 40)**2)
+    ax2.plot(t, power, color='orange', label='Power Consumption [W]')
+    ax2.set_xlabel("Time [sec]")
+    ax2.set_ylabel("Power [W]")
+    ax2.set_title("イベント実行時の電力消費推移 (80秒間)")
+    ax2.legend()
+    st.pyplot(fig2)
+    
+    st.markdown("""
+    **解説:**
+    - **電力スパイク**: タスキング（撮影や送信）実行時に急激な電力消費が発生しています。
+    - **バス電圧**: バッテリー放電により電圧降下が観測される可能性があります。
+    """)
+
+else:
+    # 長期モード：軌道周回による電力変化
+    t = np.linspace(0, 24, 200) # 24時間
+    # 90分周期の正弦波（日照・日陰）を模擬
+    power = 500 * np.sin(2 * np.pi * t * (60/90)) 
+    # 日陰（Eclipse）では発電ゼロ
+    power = np.where(power < 0, 0, power)
+    
+    ax2.plot(t, power, color='cyan', label='Solar Array Power [W]')
+    ax2.set_xlabel("Time [hour]")
+    ax2.set_ylabel("Power Generation [W]")
+    ax2.set_title("1日（長期）の電力収支プロファイル")
+    ax2.fill_between(t, power, color='cyan', alpha=0.3)
+    ax2.legend()
+    st.pyplot(fig2)
+    
+    st.markdown("""
+    **解説:**
+    - **周期変動**: 衛星が地球の裏側（日陰）に入ると発電量が0になります。
+    - **電力収支**: 発電できない期間はバッテリー電力のみで駆動する必要があります。
+    """)
