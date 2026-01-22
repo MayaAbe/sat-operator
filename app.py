@@ -126,7 +126,7 @@ if search_clicked:
                 bbox=bbox,
                 datetime=date_query,
                 query={"eo:cloud_cover": {"lt": max_cloud}},
-                sort_by=[{"field": "properties.datetime", "direction": "desc"}]
+                sortby=[{"field": "properties.datetime", "direction": "desc"}] # "sortby" に修正
             )
             items = list(search.items())
         except Exception as e:
