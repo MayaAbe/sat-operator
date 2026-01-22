@@ -143,7 +143,7 @@ if search_clicked:
         item_options = {}
         for item in items:
             dt = datetime.datetime.fromisoformat(item.properties["datetime"].replace("Z", "+00:00"))
-            sat_id = item.platform if "platform" in item.properties else item.collection_id
+            sat_id = item.properties.get("platform", item.collection_id)
             cloud = item.properties.get("eo:cloud_cover", 0)
             
             label = f"[{sat_id}] {dt.strftime('%Y-%m-%d %H:%M')} (雲量: {cloud:.1f}%)"
