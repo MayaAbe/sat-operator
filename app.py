@@ -43,14 +43,12 @@ LOCATIONS = {
     "ウェリントン (ニュージーランド)": {"lat": -41.2865, "lon": 174.7762},
 }
 
-# Microsoft Planetary Computer STAC API
 STAC_API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 # ==========================================
-# 2. ヘルパー関数 (正規化処理)
+# 2. ヘルパー関数
 # ==========================================
 def normalize(band):
-    """画素値を0-1の範囲に見やすく調整する関数"""
     valid_pixels = band[band > 0]
     if len(valid_pixels) == 0: return band
     p2, p98 = np.percentile(valid_pixels, (2, 98))
@@ -70,40 +68,48 @@ if 'search_performed' not in st.session_state:
 if 'search_bbox' not in st.session_state:
     st.session_state.search_bbox = []
 
-# サイドバー
+# --- サイドバー (フォーム化) ---
 st.sidebar.header("検索条件")
-location_mode = st.sidebar.radio("場所の指定方法", ["リストから選択", "座標を直接入力"])
 
-selected_lat = 0.0
-selected_lon = 0.0
+# formで囲むことで、submitボタンが押されるまで再実行を防ぐ
+with st.sidebar.form(key='search_form'):
+    location_mode = st.radio("場所の指定方法", ["リストから選択", "座標を直接入力"])
 
-if location_mode == "リストから選択":
-    valid_locations = [k for k, v in LOCATIONS.items() if v is not None]
-    location_name = st.sidebar.selectbox("場所を選択", valid_locations, index=valid_locations.index("筑波宇宙センター"))
-    coords = LOCATIONS[location_name]
-    selected_lat = coords["lat"]
-    selected_lon = coords["lon"]
-    st.sidebar.info(f"座標: 北緯{selected_lat}, 東経{selected_lon}")
-else:
-    col1, col2 = st.sidebar.columns(2)
-    selected_lat = col1.number_input("緯度", value=36.0652, format="%.4f")
-    selected_lon = col2.number_input("経度", value=140.1272, format="%.4f")
+    selected_lat = 0.0
+    selected_lon = 0.0
 
-buffer_deg = st.sidebar.slider("取得範囲 (度)", 0.01, 0.5, 0.1, help="0.1度 ≒ 11km")
-target_date = st.sidebar.date_input("希望する日付", datetime.date(2023, 1, 1))
-date_range_days = st.sidebar.number_input("検索幅 (前後日数)", min_value=1, max_value=30, value=5)
+    # フォーム内なので st.sidebar.selectbox ではなく st.selectbox と記述してもOKですが、
+    # わかりやすくそのまま記述します（挙動は同じです）
+    if location_mode == "リストから選択":
+        valid_locations = [k for k, v in LOCATIONS.items() if v is not None]
+        location_name = st.selectbox("場所を選択", valid_locations, index=valid_locations.index("筑波宇宙センター"))
+        coords = LOCATIONS[location_name]
+        selected_lat = coords["lat"]
+        selected_lon = coords["lon"]
+        st.info(f"座標: 北緯{selected_lat}, 東経{selected_lon}")
+    else:
+        col1, col2 = st.columns(2)
+        selected_lat = col1.number_input("緯度", value=36.0652, format="%.4f")
+        selected_lon = col2.number_input("経度", value=140.1272, format="%.4f")
 
-satellite_options = st.sidebar.multiselect(
-    "使用する衛星データ",
-    ["Sentinel-2", "Landsat 8/9"],
-    default=["Sentinel-2"]
-)
+    buffer_deg = st.slider("取得範囲 (度)", 0.01, 0.5, 0.1, help="0.1度 ≒ 11km")
+    target_date = st.date_input("希望する日付", datetime.date(2023, 1, 1))
+    date_range_days = st.number_input("検索幅 (前後日数)", min_value=1, max_value=30, value=5)
 
-max_cloud = st.sidebar.slider("許容する雲量 (%)", 0, 100, 30)
-search_clicked = st.sidebar.button("画像を検索する")
+    satellite_options = st.multiselect(
+        "使用する衛星データ",
+        ["Sentinel-2", "Landsat 8/9"],
+        default=["Sentinel-2"]
+    )
+
+    max_cloud = st.slider("許容する雲量 (%)", 0, 100, 30)
+    
+    # 通常のbuttonではなく、form_submit_buttonを使用
+    search_clicked = st.form_submit_button("画像を検索する")
+
 
 # ==========================================
-# 4. 検索ロジック
+# 4. 検索ロジック (ボタン押下時のみ実行)
 # ==========================================
 if search_clicked:
     start_date = target_date - datetime.timedelta(days=date_range_days)
@@ -146,6 +152,7 @@ if search_clicked:
 # ==========================================
 # 5. 結果表示 & 画像生成ロジック
 # ==========================================
+# ここはフォームの外なので、st.selectboxなどを操作すると即座に実行される
 if st.session_state.search_performed:
     st.header(f"📡 検索結果")
     items = st.session_state.search_results
@@ -155,7 +162,6 @@ if st.session_state.search_performed:
     else:
         st.success(f"{len(items)} 件のデータが見つかりました。")
 
-        # プルダウン作成
         item_options = {}
         for item in items:
             dt = datetime.datetime.fromisoformat(item.properties["datetime"].replace("Z", "+00:00"))
@@ -169,6 +175,8 @@ if st.session_state.search_performed:
             label = f"[{sat_disp}] {dt.strftime('%Y-%m-%d %H:%M')} (雲: {cloud:.1f}%)"
             item_options[label] = item
 
+        # このselectboxはフォーム外にあるため、変更するたびにスクリプトが再実行され、
+        # 直下の画像生成処理が走る（期待通りの挙動）
         selected_label = st.selectbox("データを選択して表示", options=list(item_options.keys()))
         
         if selected_label:
