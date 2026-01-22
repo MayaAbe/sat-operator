@@ -71,15 +71,12 @@ if 'search_bbox' not in st.session_state:
 # --- サイドバー (フォーム化) ---
 st.sidebar.header("検索条件")
 
-# formで囲むことで、submitボタンが押されるまで再実行を防ぐ
 with st.sidebar.form(key='search_form'):
     location_mode = st.radio("場所の指定方法", ["リストから選択", "座標を直接入力"])
 
     selected_lat = 0.0
     selected_lon = 0.0
 
-    # フォーム内なので st.sidebar.selectbox ではなく st.selectbox と記述してもOKですが、
-    # わかりやすくそのまま記述します（挙動は同じです）
     if location_mode == "リストから選択":
         valid_locations = [k for k, v in LOCATIONS.items() if v is not None]
         location_name = st.selectbox("場所を選択", valid_locations, index=valid_locations.index("筑波宇宙センター"))
@@ -104,7 +101,6 @@ with st.sidebar.form(key='search_form'):
 
     max_cloud = st.slider("許容する雲量 (%)", 0, 100, 30)
     
-    # 通常のbuttonではなく、form_submit_buttonを使用
     search_clicked = st.form_submit_button("画像を検索する")
 
 
@@ -112,6 +108,9 @@ with st.sidebar.form(key='search_form'):
 # 4. 検索ロジック (ボタン押下時のみ実行)
 # ==========================================
 if search_clicked:
+    # 検索前に結果をリセット（重要：前の結果が残っていると混乱するため）
+    st.session_state.search_results = []
+    
     start_date = target_date - datetime.timedelta(days=date_range_days)
     end_date = target_date + datetime.timedelta(days=date_range_days)
     date_query = f"{start_date.isoformat()}/{end_date.isoformat()}"
@@ -152,7 +151,6 @@ if search_clicked:
 # ==========================================
 # 5. 結果表示 & 画像生成ロジック
 # ==========================================
-# ここはフォームの外なので、st.selectboxなどを操作すると即座に実行される
 if st.session_state.search_performed:
     st.header(f"📡 検索結果")
     items = st.session_state.search_results
@@ -162,6 +160,7 @@ if st.session_state.search_performed:
     else:
         st.success(f"{len(items)} 件のデータが見つかりました。")
 
+        # --- 画像リスト作成 ---
         item_options = {}
         for item in items:
             dt = datetime.datetime.fromisoformat(item.properties["datetime"].replace("Z", "+00:00"))
@@ -175,34 +174,50 @@ if st.session_state.search_performed:
             label = f"[{sat_disp}] {dt.strftime('%Y-%m-%d %H:%M')} (雲: {cloud:.1f}%)"
             item_options[label] = item
 
-        # このselectboxはフォーム外にあるため、変更するたびにスクリプトが再実行され、
-        # 直下の画像生成処理が走る（期待通りの挙動）
-        selected_label = st.selectbox("データを選択して表示", options=list(item_options.keys()))
+        # --- 重要変更点: 初期値は未選択にする ---
+        # 意図しない読み込みを防ぐため、リストの先頭にダミー選択肢を追加
+        options_list = ["--- 画像を選択してください ---"] + list(item_options.keys())
+
+        selected_label = st.selectbox(
+            "表示するデータを選択してください（選択するとダウンロードを開始します）", 
+            options=options_list
+        )
         
-        if selected_label:
+        # ダミー以外の正規の選択肢が選ばれた時だけ処理を実行
+        if selected_label != "--- 画像を選択してください ---":
             selected_item = item_options[selected_label]
             
             col_img, col_info = st.columns([2, 1])
             
             with col_img:
-                st.markdown("**画像を生成中...** (数秒かかります)")
+                st.markdown("**画像を生成中...**")
                 
                 try:
                     collection_id = selected_item.collection_id
                     
+                    # --- 変更点: メモリ保護のための解像度調整と通知 ---
+                    area_size = st.session_state.search_bbox[2] - st.session_state.search_bbox[0]
+                    base_resolution = 10 if "sentinel-2" in collection_id else 30
+                    
+                    # 範囲が広すぎる(0.1度以上)場合は、解像度を落とす
+                    if area_size > 0.1:
+                        # 0.1度を超えたら解像度を4倍（荒く）にする
+                        resolution = base_resolution * 4 
+                        st.warning(f"⚠️ **メモリ保護モード**: 指定範囲が広いため、解像度を落として表示しています。\n（元解像度: {base_resolution}m → 表示解像度: {resolution}m）")
+                    else:
+                        resolution = base_resolution
+                    # ----------------------------------------------
+
                     if "sentinel-2" in collection_id:
                         bands = ["B04", "B03", "B02"]
-                        resolution = 10
                     elif "landsat" in collection_id:
                         bands = ["red", "green", "blue"]
-                        resolution = 30
                     else:
                         bands = ["red", "green", "blue"]
-                        resolution = 30
 
                     load_bbox = st.session_state.search_bbox
 
-                    with st.spinner("クラウドからピクセルデータをダウンロード・合成中..."):
+                    with st.spinner("クラウドからデータを取得・合成中..."):
                         ds = odc.stac.load(
                             [selected_item],
                             bands=bands,
@@ -221,13 +236,15 @@ if st.session_state.search_performed:
 
                     rgb = np.dstack((normalize(r), normalize(g), normalize(b)))
                     
-                    st.image(rgb, caption=f"合成画像: {selected_label}", clamp=True, use_column_width=True)
+                    # --- 変更点: 表示サイズの制限 ---
+                    # width=600 を指定して、スクロール不要なサイズに固定
+                    st.image(rgb, caption=f"合成画像: {selected_label}", clamp=True, width=600)
                     st.success("表示完了")
 
                 except Exception as e:
-                    st.error("画像生成エラー")
-                    st.error(e)
-                    st.caption("※サーバー負荷や通信状況により失敗する場合があります。")
+                    st.error("画像生成エラー（メモリ不足または通信エラー）")
+                    st.caption(e)
+                    st.info("ヒント: 「取得範囲」を小さくするか、別の画像を選択してみてください。")
 
             with col_info:
                 st.subheader("メタデータ")
