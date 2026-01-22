@@ -5,9 +5,11 @@ import odc.stac
 import numpy as np
 import pandas as pd
 import datetime
+from PIL import Image
+import io
 
 # ページ設定
-st.set_page_config(page_title="衛星画像取得ビューア", layout="wide")
+st.set_page_config(page_title="衛星画像取得プラットフォーム", layout="wide")
 
 # ==========================================
 # 1. 定数・設定
@@ -49,6 +51,7 @@ STAC_API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 # 2. ヘルパー関数
 # ==========================================
 def normalize(band):
+    """画素値を0-1の範囲に調整"""
     valid_pixels = band[band > 0]
     if len(valid_pixels) == 0: return band
     p2, p98 = np.percentile(valid_pixels, (2, 98))
@@ -57,8 +60,9 @@ def normalize(band):
 # ==========================================
 # 3. UI レイアウト
 # ==========================================
-st.title("🛰️ 衛星画像取得シミュレーター")
-st.markdown("指定した場所・日時の衛星データをダウンロードし、可視化します。")
+# 変更点: タイトル変更
+st.title("🛰️ 衛星画像取得プラットフォーム")
+st.markdown("指定した場所・日時の衛星データをダウンロードし、可視化・保存できます。")
 
 # Session State 初期化
 if 'search_results' not in st.session_state:
@@ -108,7 +112,6 @@ with st.sidebar.form(key='search_form'):
 # 4. 検索ロジック (ボタン押下時のみ実行)
 # ==========================================
 if search_clicked:
-    # 検索前に結果をリセット（重要：前の結果が残っていると混乱するため）
     st.session_state.search_results = []
     
     start_date = target_date - datetime.timedelta(days=date_range_days)
@@ -160,7 +163,6 @@ if st.session_state.search_performed:
     else:
         st.success(f"{len(items)} 件のデータが見つかりました。")
 
-        # --- 画像リスト作成 ---
         item_options = {}
         for item in items:
             dt = datetime.datetime.fromisoformat(item.properties["datetime"].replace("Z", "+00:00"))
@@ -174,8 +176,6 @@ if st.session_state.search_performed:
             label = f"[{sat_disp}] {dt.strftime('%Y-%m-%d %H:%M')} (雲: {cloud:.1f}%)"
             item_options[label] = item
 
-        # --- 重要変更点: 初期値は未選択にする ---
-        # 意図しない読み込みを防ぐため、リストの先頭にダミー選択肢を追加
         options_list = ["--- 画像を選択してください ---"] + list(item_options.keys())
 
         selected_label = st.selectbox(
@@ -183,7 +183,6 @@ if st.session_state.search_performed:
             options=options_list
         )
         
-        # ダミー以外の正規の選択肢が選ばれた時だけ処理を実行
         if selected_label != "--- 画像を選択してください ---":
             selected_item = item_options[selected_label]
             
@@ -195,18 +194,17 @@ if st.session_state.search_performed:
                 try:
                     collection_id = selected_item.collection_id
                     
-                    # --- 変更点: メモリ保護のための解像度調整と通知 ---
+                    # --- 変更点: メモリ保護の緩和 ---
                     area_size = st.session_state.search_bbox[2] - st.session_state.search_bbox[0]
                     base_resolution = 10 if "sentinel-2" in collection_id else 30
                     
-                    # 範囲が広すぎる(0.1度以上)場合は、解像度を落とす
-                    if area_size > 0.1:
-                        # 0.1度を超えたら解像度を4倍（荒く）にする
+                    # 閾値を 0.1 -> 0.5 (約55km) に緩和しました
+                    if area_size > 0.5:
                         resolution = base_resolution * 4 
-                        st.warning(f"⚠️ **メモリ保護モード**: 指定範囲が広いため、解像度を落として表示しています。\n（元解像度: {base_resolution}m → 表示解像度: {resolution}m）")
+                        st.warning(f"⚠️ **メモリ保護モード**: 指定範囲が非常に広いため、解像度を落として表示しています。\n（{base_resolution}m → {resolution}m）")
                     else:
                         resolution = base_resolution
-                    # ----------------------------------------------
+                    # ------------------------------
 
                     if "sentinel-2" in collection_id:
                         bands = ["B04", "B03", "B02"]
@@ -236,15 +234,28 @@ if st.session_state.search_performed:
 
                     rgb = np.dstack((normalize(r), normalize(g), normalize(b)))
                     
-                    # --- 変更点: 表示サイズの制限 ---
-                    # width=600 を指定して、スクロール不要なサイズに固定
-                    st.image(rgb, caption=f"合成画像: {selected_label}", clamp=True, width=600)
+                    # --- 変更点: レスポンシブ対応 (use_column_width=True) ---
+                    st.image(rgb, caption=f"合成画像: {selected_label}", clamp=True, use_column_width=True)
+                    
+                    # --- 変更点: ダウンロードボタンの追加 ---
+                    # NumPy配列を画像バイトデータに変換
+                    img_array = (rgb * 255).astype(np.uint8) # 0-1 float -> 0-255 int
+                    img_pil = Image.fromarray(img_array)
+                    buf = io.BytesIO()
+                    img_pil.save(buf, format="PNG")
+                    byte_im = buf.getvalue()
+
+                    st.download_button(
+                        label="📥 画像をダウンロード (PNG)",
+                        data=byte_im,
+                        file_name=f"satellite_image_{target_date}.png",
+                        mime="image/png"
+                    )
                     st.success("表示完了")
 
                 except Exception as e:
-                    st.error("画像生成エラー（メモリ不足または通信エラー）")
+                    st.error("画像生成エラー")
                     st.caption(e)
-                    st.info("ヒント: 「取得範囲」を小さくするか、別の画像を選択してみてください。")
 
             with col_info:
                 st.subheader("メタデータ")
