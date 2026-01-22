@@ -1,8 +1,6 @@
-streamlit>=1.30
-numpy
-pandas
-matplotlib
-pystac
+streamlit
 pystac-client
 planetary-computer
 odc-stac
+pandas
+numpy
