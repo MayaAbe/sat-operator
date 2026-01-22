@@ -1,6 +1,9 @@
 import streamlit as st
 from pystac_client import Client
 import datetime
+import requests  # <--- これを追加
+from PIL import Image # <--- これも追加しておくと安心です
+import io
 
 # ページ設定
 st.set_page_config(page_title="衛星画像取得ビューア", layout="wide")
@@ -167,10 +170,34 @@ if st.session_state.search_performed:
             col_img, col_info = st.columns([2, 1])
             
             with col_img:
+                # 画像URLの特定
+                image_url = None
                 if "thumbnail" in selected_item.assets:
-                    st.image(selected_item.assets["thumbnail"].href, caption="サムネイル画像", use_column_width=True)
+                    image_url = selected_item.assets["thumbnail"].href
                 elif "visual" in selected_item.assets:
-                    st.image(selected_item.assets["visual"].href, caption="Visual画像", use_column_width=True)
+                    image_url = selected_item.assets["visual"].href
+                elif "overview" in selected_item.assets: # Landsatで使われることがあるキー
+                    image_url = selected_item.assets["overview"].href
+
+                # 画像の取得と表示（エラーハンドリング付き）
+                if image_url:
+                    try:
+                        # タイムアウトを設定してダウンロードを試みる
+                        response = requests.get(image_url, timeout=10)
+                        
+                        if response.status_code == 200:
+                            # 成功したらバイトデータから画像を表示
+                            image_bytes = io.BytesIO(response.content)
+                            st.image(image_bytes, caption=f"プレビュー画像 ({sat_id})", use_column_width=True)
+                        else:
+                            # 403エラーなどが返ってきた場合
+                            st.warning(f"画像の取得に失敗しました (Status: {response.status_code})。")
+                            st.caption(f"URL: {image_url}")
+                            st.info("※Landsatなどの一部データは、直接アクセスの制限によりプレビューが表示できない場合があります。")
+                            
+                    except Exception as e:
+                        st.error("画像の読み込み中にエラーが発生しました。")
+                        st.caption(f"Error: {e}")
                 else:
                     st.warning("表示可能なサムネイル画像が見つかりませんでした。")
 
@@ -180,7 +207,6 @@ if st.session_state.search_performed:
                 st.write(f"**衛星/プラットフォーム**: {props.get('platform', 'Unknown')}")
                 st.write(f"**撮影日時**: {props.get('datetime')}")
                 st.write(f"**雲量**: {props.get('eo:cloud_cover')}%")
-                st.write(f"**太陽高度**: {props.get('view:sun_elevation', 'N/A')}")
                 st.write(f"**データID**: {selected_item.id}")
                 
                 with st.expander("全メタデータを見る"):
