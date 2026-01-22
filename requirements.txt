@@ -4,3 +4,5 @@ planetary-computer
 odc-stac
 pandas
 numpy
+plotly
+Pillow
