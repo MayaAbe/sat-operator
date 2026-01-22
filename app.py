@@ -1,15 +1,16 @@
 import streamlit as st
 from pystac_client import Client
+import planetary_computer
+import odc.stac
+import numpy as np
+import pandas as pd
 import datetime
-import requests  # <--- これを追加
-from PIL import Image # <--- これも追加しておくと安心です
-import io
 
 # ページ設定
 st.set_page_config(page_title="衛星画像取得ビューア", layout="wide")
 
 # ==========================================
-# 1. 定数・設定（場所リストの定義）
+# 1. 定数・設定
 # ==========================================
 LOCATIONS = {
     "--- 国内 (日本) ---": None,
@@ -42,24 +43,35 @@ LOCATIONS = {
     "ウェリントン (ニュージーランド)": {"lat": -41.2865, "lon": 174.7762},
 }
 
-STAC_API_URL = "https://earth-search.aws.element84.com/v1"
+# Microsoft Planetary Computer STAC API
+STAC_API_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 # ==========================================
-# 2. UI レイアウト
+# 2. ヘルパー関数 (正規化処理)
+# ==========================================
+def normalize(band):
+    """画素値を0-1の範囲に見やすく調整する関数"""
+    valid_pixels = band[band > 0]
+    if len(valid_pixels) == 0: return band
+    p2, p98 = np.percentile(valid_pixels, (2, 98))
+    return np.clip((band - p2) / (p98 - p2), 0, 1)
+
+# ==========================================
+# 3. UI レイアウト
 # ==========================================
 st.title("🛰️ 衛星画像取得シミュレーター")
-st.markdown("指定した場所・日時の衛星画像を検索し、プレビューを表示します。")
+st.markdown("指定した場所・日時の衛星データをダウンロードし、可視化します。")
 
-# --- Session State の初期化 ---
-# 検索結果を保持するための変数を初期化します
+# Session State 初期化
 if 'search_results' not in st.session_state:
     st.session_state.search_results = []
 if 'search_performed' not in st.session_state:
     st.session_state.search_performed = False
+if 'search_bbox' not in st.session_state:
+    st.session_state.search_bbox = []
 
-# サイドバー：検索条件の設定
+# サイドバー
 st.sidebar.header("検索条件")
-
 location_mode = st.sidebar.radio("場所の指定方法", ["リストから選択", "座標を直接入力"])
 
 selected_lat = 0.0
@@ -77,8 +89,7 @@ else:
     selected_lat = col1.number_input("緯度", value=36.0652, format="%.4f")
     selected_lon = col2.number_input("経度", value=140.1272, format="%.4f")
 
-buffer_deg = st.sidebar.slider("取得範囲 (度)", 0.01, 0.5, 0.1, help="中心座標からの広さ（約0.1度=約11km）")
-
+buffer_deg = st.sidebar.slider("取得範囲 (度)", 0.01, 0.5, 0.1, help="0.1度 ≒ 11km")
 target_date = st.sidebar.date_input("希望する日付", datetime.date(2023, 1, 1))
 date_range_days = st.sidebar.number_input("検索幅 (前後日数)", min_value=1, max_value=30, value=5)
 
@@ -88,22 +99,20 @@ satellite_options = st.sidebar.multiselect(
     default=["Sentinel-2"]
 )
 
-max_cloud = st.sidebar.slider("許容する雲量 (%)", 0, 100, 20)
-
+max_cloud = st.sidebar.slider("許容する雲量 (%)", 0, 100, 30)
 search_clicked = st.sidebar.button("画像を検索する")
 
 # ==========================================
-# 3. 検索ロジック (ボタン押下時のみ実行)
+# 4. 検索ロジック
 # ==========================================
 if search_clicked:
-    # 検索期間の計算
     start_date = target_date - datetime.timedelta(days=date_range_days)
     end_date = target_date + datetime.timedelta(days=date_range_days)
     date_query = f"{start_date.isoformat()}/{end_date.isoformat()}"
     
     bbox = [
-        selected_lon - buffer_deg, selected_lat - buffer_deg,
-        selected_lon + buffer_deg, selected_lat + buffer_deg
+        selected_lon - buffer_deg/2, selected_lat - buffer_deg/2,
+        selected_lon + buffer_deg/2, selected_lat + buffer_deg/2
     ]
 
     collections = []
@@ -115,99 +124,108 @@ if search_clicked:
     if not collections:
         st.error("衛星を選択してください。")
     else:
-        with st.spinner(f"{start_date} から {end_date} の期間でデータを検索中..."):
+        with st.spinner(f"カタログを検索中..."):
             try:
-                client = Client.open(STAC_API_URL)
+                client = Client.open(STAC_API_URL, modifier=planetary_computer.sign_inplace)
                 search = client.search(
                     collections=collections,
                     bbox=bbox,
                     datetime=date_query,
                     query={"eo:cloud_cover": {"lt": max_cloud}},
-                    sortby=[{"field": "properties.datetime", "direction": "desc"}] # 修正済み: sortby
+                    sortby=[{"field": "properties.datetime", "direction": "desc"}]
                 )
                 items = list(search.items())
                 
-                # --- 結果をSession Stateに保存 ---
                 st.session_state.search_results = items
+                st.session_state.search_bbox = bbox
                 st.session_state.search_performed = True
                 
             except Exception as e:
                 st.error(f"検索エラー: {e}")
 
 # ==========================================
-# 4. 結果表示 (保存されたデータがあれば表示)
+# 5. 結果表示 & 画像生成ロジック
 # ==========================================
 if st.session_state.search_performed:
     st.header(f"📡 検索結果")
     items = st.session_state.search_results
 
     if not items:
-        st.warning("条件に合う画像が見つかりませんでした。雲量の条件を緩めるか、日付を変更してください。")
+        st.warning("画像が見つかりませんでした。条件を変更してください。")
     else:
-        st.success(f"{len(items)} 件の画像が見つかりました。")
+        st.success(f"{len(items)} 件のデータが見つかりました。")
 
-        # プルダウン用のリスト作成
+        # プルダウン作成
         item_options = {}
         for item in items:
             dt = datetime.datetime.fromisoformat(item.properties["datetime"].replace("Z", "+00:00"))
-            
-            # 修正済み: 辞書から安全に取得
             sat_id = item.properties.get("platform", item.collection_id)
-            
             cloud = item.properties.get("eo:cloud_cover", 0)
             
-            label = f"[{sat_id}] {dt.strftime('%Y-%m-%d %H:%M')} (雲量: {cloud:.1f}%)"
+            if "sentinel" in item.collection_id: sat_disp = "Sentinel-2"
+            elif "landsat" in item.collection_id: sat_disp = "Landsat"
+            else: sat_disp = sat_id
+
+            label = f"[{sat_disp}] {dt.strftime('%Y-%m-%d %H:%M')} (雲: {cloud:.1f}%)"
             item_options[label] = item
 
-        # 結果選択プルダウン
-        # ここで選択を変えて再実行されても、st.session_state.search_performedはTrueのままなので表示が維持されます
-        selected_label = st.selectbox("表示する画像を選択 (撮影日時・時刻)", options=list(item_options.keys()))
+        selected_label = st.selectbox("データを選択して表示", options=list(item_options.keys()))
         
-        # 選択されたアイテムの表示
         if selected_label:
             selected_item = item_options[selected_label]
             
             col_img, col_info = st.columns([2, 1])
             
             with col_img:
-                # 画像URLの特定
-                image_url = None
-                if "thumbnail" in selected_item.assets:
-                    image_url = selected_item.assets["thumbnail"].href
-                elif "visual" in selected_item.assets:
-                    image_url = selected_item.assets["visual"].href
-                elif "overview" in selected_item.assets: # Landsatで使われることがあるキー
-                    image_url = selected_item.assets["overview"].href
+                st.markdown("**画像を生成中...** (数秒かかります)")
+                
+                try:
+                    collection_id = selected_item.collection_id
+                    
+                    if "sentinel-2" in collection_id:
+                        bands = ["B04", "B03", "B02"]
+                        resolution = 10
+                    elif "landsat" in collection_id:
+                        bands = ["red", "green", "blue"]
+                        resolution = 30
+                    else:
+                        bands = ["red", "green", "blue"]
+                        resolution = 30
 
-                # 画像の取得と表示（エラーハンドリング付き）
-                if image_url:
-                    try:
-                        # タイムアウトを設定してダウンロードを試みる
-                        response = requests.get(image_url, timeout=10)
-                        
-                        if response.status_code == 200:
-                            # 成功したらバイトデータから画像を表示
-                            image_bytes = io.BytesIO(response.content)
-                            st.image(image_bytes, caption=f"プレビュー画像 ({sat_id})", use_column_width=True)
-                        else:
-                            # 403エラーなどが返ってきた場合
-                            st.warning(f"画像の取得に失敗しました (Status: {response.status_code})。")
-                            st.caption(f"URL: {image_url}")
-                            st.info("※Landsatなどの一部データは、直接アクセスの制限によりプレビューが表示できない場合があります。")
-                            
-                    except Exception as e:
-                        st.error("画像の読み込み中にエラーが発生しました。")
-                        st.caption(f"Error: {e}")
-                else:
-                    st.warning("表示可能なサムネイル画像が見つかりませんでした。")
+                    load_bbox = st.session_state.search_bbox
+
+                    with st.spinner("クラウドからピクセルデータをダウンロード・合成中..."):
+                        ds = odc.stac.load(
+                            [selected_item],
+                            bands=bands,
+                            bbox=load_bbox,
+                            resolution=resolution
+                        )
+
+                    if "B04" in bands:
+                        r = ds["B04"].isel(time=0).values.astype(float)
+                        g = ds["B03"].isel(time=0).values.astype(float)
+                        b = ds["B02"].isel(time=0).values.astype(float)
+                    else:
+                        r = ds["red"].isel(time=0).values.astype(float)
+                        g = ds["green"].isel(time=0).values.astype(float)
+                        b = ds["blue"].isel(time=0).values.astype(float)
+
+                    rgb = np.dstack((normalize(r), normalize(g), normalize(b)))
+                    
+                    st.image(rgb, caption=f"合成画像: {selected_label}", clamp=True, use_column_width=True)
+                    st.success("表示完了")
+
+                except Exception as e:
+                    st.error("画像生成エラー")
+                    st.error(e)
+                    st.caption("※サーバー負荷や通信状況により失敗する場合があります。")
 
             with col_info:
-                st.subheader("メタデータ情報")
+                st.subheader("メタデータ")
                 props = selected_item.properties
-                st.write(f"**衛星/プラットフォーム**: {props.get('platform', 'Unknown')}")
-                st.write(f"**撮影日時**: {props.get('datetime')}")
+                st.write(f"**衛星**: {props.get('platform', 'Unknown')}")
+                st.write(f"**日時**: {props.get('datetime')}")
                 st.write(f"**雲量**: {props.get('eo:cloud_cover')}%")
-                st.write(f"**データID**: {selected_item.id}")
-                
-                with st.expander("全メタデータを見る"):
+                with st.expander("詳細メタデータ"):
                     st.json(props)
